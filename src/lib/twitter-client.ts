@@ -3,18 +3,49 @@
  */
 
 import type { TwitterCookies } from './cookies.js';
+import queryIds from './query-ids.json' with { type: 'json' };
 
 const TWITTER_API_BASE = 'https://x.com/i/api/graphql';
 
-// Twitter GraphQL query IDs - these may need to be updated periodically
-// as Twitter rotates them. Check browser network tab for current values.
-// Source: https://github.com/fa0311/TwitterInternalAPIDocument
-const QUERY_IDS = {
+// Query IDs rotate frequently; the values in query-ids.json are refreshed by
+// scripts/update-query-ids.ts. The fallback values keep the client usable if
+// the file is missing or incomplete.
+const FALLBACK_QUERY_IDS = {
   CreateTweet: 'TAJw1rBsjAtdNgTdlo2oeg',
   CreateRetweet: 'ojPdsZsimiJrUGLR1sjUtA',
   FavoriteTweet: 'lI07N6Otwv1PhnEgXILM7A',
   TweetDetail: 'nBS-WpgA6ZG0CyNHD517JQ',
   SearchTimeline: 'Tp1sewRU1AsZpBWhqCZicQ',
+} as const;
+
+type OperationName = keyof typeof FALLBACK_QUERY_IDS;
+
+const QUERY_IDS: Record<OperationName, string> = {
+  ...FALLBACK_QUERY_IDS,
+  ...(queryIds as Partial<Record<OperationName, string>>),
+};
+
+type GraphqlTweetResult = {
+  rest_id?: string;
+  legacy?: {
+    full_text?: string;
+    created_at?: string;
+    reply_count?: number;
+    retweet_count?: number;
+    favorite_count?: number;
+    conversation_id_str?: string;
+    in_reply_to_status_id_str?: string | null;
+  };
+  core?: {
+    user_results?: {
+      result?: {
+        legacy?: {
+          screen_name?: string;
+          name?: string;
+        };
+      };
+    };
+  };
 };
 
 export interface TweetResult {
@@ -34,6 +65,8 @@ export interface TweetData {
   replyCount?: number;
   retweetCount?: number;
   likeCount?: number;
+  conversationId?: string;
+  inReplyToStatusId?: string;
 }
 
 export interface GetTweetResult {
@@ -150,10 +183,74 @@ export class TwitterClient {
     };
   }
 
-  /**
-   * Get tweet details by ID
-   */
-  async getTweet(tweetId: string): Promise<GetTweetResult> {
+  private mapTweetResult(result: GraphqlTweetResult | undefined): TweetData | undefined {
+    if (!result?.legacy || !result.core?.user_results?.result?.legacy?.screen_name) return undefined;
+    return {
+      id: result.rest_id || '',
+      text: result.legacy.full_text || '',
+      createdAt: result.legacy.created_at,
+      replyCount: result.legacy.reply_count,
+      retweetCount: result.legacy.retweet_count,
+      likeCount: result.legacy.favorite_count,
+      conversationId: result.legacy.conversation_id_str,
+      inReplyToStatusId: result.legacy.in_reply_to_status_id_str ?? undefined,
+      author: {
+        username: result.core.user_results.result.legacy.screen_name,
+        name: result.core.user_results.result.legacy.name || result.core.user_results.result.legacy.screen_name,
+      },
+    };
+  }
+
+  private parseTweetsFromInstructions(
+    instructions:
+      | Array<{
+          entries?: Array<{
+            content?: {
+              itemContent?: {
+                tweet_results?: {
+                  result?: GraphqlTweetResult;
+                };
+              };
+            };
+          }>;
+        }>
+      | undefined,
+  ): TweetData[] {
+    const tweets: TweetData[] = [];
+    for (const instruction of instructions ?? []) {
+      for (const entry of instruction.entries ?? []) {
+        const result = entry.content?.itemContent?.tweet_results?.result;
+        const mapped = this.mapTweetResult(result);
+        if (mapped) tweets.push(mapped);
+      }
+    }
+    return tweets;
+  }
+
+  private async fetchTweetDetail(
+    tweetId: string,
+  ): Promise<
+    | {
+        success: true;
+        data: {
+          tweetResult?: { result?: GraphqlTweetResult };
+          threaded_conversation_with_injections_v2?: {
+            instructions?: Array<{
+              entries?: Array<{
+                content?: {
+                  itemContent?: {
+                    tweet_results?: {
+                      result?: GraphqlTweetResult;
+                    };
+                  };
+                };
+              }>;
+            }>;
+          };
+        };
+      }
+    | { success: false; error: string }
+  > {
     const variables = {
       focalTweetId: tweetId,
       with_rux_injections: false,
@@ -206,62 +303,19 @@ export class TwitterClient {
 
       if (!response.ok) {
         const text = await response.text();
-        return {
-          success: false,
-          error: `HTTP ${response.status}: ${text.slice(0, 200)}`,
-        };
+        return { success: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}` };
       }
 
       const data = (await response.json()) as {
         data?: {
-          tweetResult?: {
-            result?: {
-              rest_id?: string;
-              legacy?: {
-                full_text?: string;
-                created_at?: string;
-                reply_count?: number;
-                retweet_count?: number;
-                favorite_count?: number;
-              };
-              core?: {
-                user_results?: {
-                  result?: {
-                    legacy?: {
-                      screen_name?: string;
-                      name?: string;
-                    };
-                  };
-                };
-              };
-            };
-          };
+          tweetResult?: { result?: GraphqlTweetResult };
           threaded_conversation_with_injections_v2?: {
             instructions?: Array<{
               entries?: Array<{
                 content?: {
                   itemContent?: {
                     tweet_results?: {
-                      result?: {
-                        rest_id?: string;
-                        legacy?: {
-                          full_text?: string;
-                          created_at?: string;
-                          reply_count?: number;
-                          retweet_count?: number;
-                          favorite_count?: number;
-                        };
-                        core?: {
-                          user_results?: {
-                            result?: {
-                              legacy?: {
-                                screen_name?: string;
-                                name?: string;
-                              };
-                            };
-                          };
-                        };
-                      };
+                      result?: GraphqlTweetResult;
                     };
                   };
                 };
@@ -269,59 +323,52 @@ export class TwitterClient {
             }>;
           };
         };
-        errors?: Array<{ message: string }>;
+        errors?: Array<{ message: string; code?: number }>;
       };
 
       if (data.errors && data.errors.length > 0) {
-        return {
-          success: false,
-          error: data.errors.map((e) => e.message).join(', '),
-        };
+        return { success: false, error: data.errors.map((e) => e.message).join(', ') };
       }
 
-      // Prefer direct tweetResult if present, otherwise search the conversation thread
-      const tweetResult =
-        data.data?.tweetResult?.result ??
-        this.findTweetInInstructions(data.data?.threaded_conversation_with_injections_v2?.instructions, tweetId);
-
-      if (!tweetResult) {
-        return {
-          success: false,
-          error: 'Tweet not found in response',
-        };
-      }
-
-      const legacy = tweetResult.legacy;
-      const userLegacy = tweetResult.core?.user_results?.result?.legacy;
-
-      if (!legacy?.full_text || !userLegacy?.screen_name) {
-        return {
-          success: false,
-          error: 'Incomplete tweet data',
-        };
-      }
-
-      return {
-        success: true,
-        tweet: {
-          id: tweetResult.rest_id || tweetId,
-          text: legacy.full_text,
-          author: {
-            username: userLegacy.screen_name,
-            name: userLegacy.name || userLegacy.screen_name,
-          },
-          createdAt: legacy.created_at,
-          replyCount: legacy.reply_count,
-          retweetCount: legacy.retweet_count,
-          likeCount: legacy.favorite_count,
-        },
-      };
+      return { success: true, data: data.data ?? {} };
     } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /**
+   * Get tweet details by ID
+   */
+  async getTweet(tweetId: string): Promise<GetTweetResult> {
+    const response = await this.fetchTweetDetail(tweetId);
+    if (!response.success) {
+      return response;
+    }
+
+    const tweetResult =
+      (response.data.tweetResult as { result?: GraphqlTweetResult } | undefined)?.result ??
+      this.findTweetInInstructions(
+        response.data.threaded_conversation_with_injections_v2?.instructions as
+          | Array<{
+              entries?: Array<{
+                content?: {
+                  itemContent?: {
+                    tweet_results?: {
+                      result?: GraphqlTweetResult;
+                    };
+                  };
+                };
+              }>;
+            }>
+          | undefined,
+        tweetId,
+      );
+
+    const mapped = this.mapTweetResult(tweetResult);
+    if (mapped) {
+      return { success: true, tweet: mapped };
+    }
+    return { success: false, error: 'Tweet not found in response' };
   }
 
   /**
@@ -634,5 +681,42 @@ export class TwitterClient {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  /**
+   * Get replies to a tweet by ID
+   */
+  async getReplies(tweetId: string): Promise<SearchResult> {
+    const response = await this.fetchTweetDetail(tweetId);
+    if (!response.success) return response;
+
+    const instructions = response.data.threaded_conversation_with_injections_v2?.instructions;
+    const tweets = this.parseTweetsFromInstructions(instructions);
+    const replies = tweets.filter((tweet) => tweet.inReplyToStatusId === tweetId);
+
+    return { success: true, tweets: replies };
+  }
+
+  /**
+   * Get full conversation thread for a tweet ID
+   */
+  async getThread(tweetId: string): Promise<SearchResult> {
+    const response = await this.fetchTweetDetail(tweetId);
+    if (!response.success) return response;
+
+    const instructions = response.data.threaded_conversation_with_injections_v2?.instructions;
+    const tweets = this.parseTweetsFromInstructions(instructions);
+
+    const target = tweets.find((t) => t.id === tweetId);
+    const rootId = target?.conversationId || tweetId;
+    const thread = tweets.filter((tweet) => tweet.conversationId === rootId);
+
+    thread.sort((a, b) => {
+      const aTime = a.createdAt ? Date.parse(a.createdAt) : 0;
+      const bTime = b.createdAt ? Date.parse(b.createdAt) : 0;
+      return aTime - bTime;
+    });
+
+    return { success: true, tweets: thread };
   }
 }

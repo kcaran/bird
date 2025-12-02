@@ -16,9 +16,14 @@ pnpm run binary  # Creates the 'bird' executable
 - `bird tweet "<text>"` — post a new tweet.
 - `bird reply <tweet-id-or-url> "<text>"` — reply to a tweet using its ID or URL.
 - `bird read <tweet-id-or-url> [--json]` — fetch tweet content as text or JSON.
+- `bird replies <tweet-id-or-url> [--json]` — list replies to a tweet.
+- `bird thread <tweet-id-or-url> [--json]` — show the full conversation thread.
 - `bird search "<query>" [-n count] [--json]` — search for tweets matching a query.
 - `bird mentions [-n count] [--json]` — find tweets mentioning @clawdbot.
 - `bird check` — show which credentials are available and where they were sourced from.
+
+Global engine switch:
+- `--engine graphql|sweetistics|auto` (default `auto`). `auto` uses Sweetistics when an API key is provided, otherwise falls back to direct GraphQL. `sweetistics` requires `--sweetistics-api-key` (or env) and uses Sweetistics for all commands. `graphql` forces direct Twitter cookies even if an API key is present.
 
 ### Post a tweet
 
@@ -132,4 +137,4 @@ pnpm run lint:fix
 
 - Chrome cookie extraction requires macOS (uses `sqlite3` and `security` CLI tools).
 - The keychain access may block when running over SSH; use environment variables instead.
-- Twitter/X may rotate GraphQL query IDs; update `src/lib/twitter-client.ts` if requests start failing.
+- Twitter/X rotates GraphQL query IDs; refresh them with `pnpm run graphql:update` (writes `src/lib/query-ids.json`).

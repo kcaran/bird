@@ -12,7 +12,7 @@
 import { Command } from 'commander';
 import { resolveCredentials } from './lib/cookies.js';
 import { extractTweetId } from './lib/extract-tweet-id.js';
-import { TwitterClient } from './lib/twitter-client.js';
+import { TwitterClient, type TweetData } from './lib/twitter-client.js';
 import { SweetisticsClient } from './lib/sweetistics-client.js';
 
 const program = new Command();
@@ -25,7 +25,14 @@ program
   .option('--ct0 <token>', 'Twitter ct0 cookie')
   .option('--chrome-profile <name>', 'Chrome profile name for cookie extraction')
   .option('--sweetistics-api-key <key>', 'Sweetistics API key (or set SWEETISTICS_API_KEY)')
-  .option('--sweetistics-base-url <url>', 'Sweetistics base URL', process.env.SWEETISTICS_BASE_URL || 'https://sweetistics.com');
+  .option('--sweetistics-base-url <url>', 'Sweetistics base URL', process.env.SWEETISTICS_BASE_URL || 'https://sweetistics.com')
+  .option(
+    '--engine <engine>',
+    'Engine: graphql | sweetistics | auto',
+    process.env.BIRD_ENGINE || 'auto',
+  );
+
+type EngineMode = 'graphql' | 'sweetistics' | 'auto';
 
 function resolveSweetisticsConfig(options: { sweetisticsApiKey?: string; sweetisticsBaseUrl?: string }) {
   const apiKey =
@@ -39,6 +46,45 @@ function resolveSweetisticsConfig(options: { sweetisticsApiKey?: string; sweetis
   return { apiKey, baseUrl };
 }
 
+function resolveEngineMode(value?: string): EngineMode {
+  const normalized = (value || 'auto').toLowerCase();
+  if (normalized === 'graphql' || normalized === 'sweetistics' || normalized === 'auto') {
+    return normalized;
+  }
+  return 'auto';
+}
+
+function shouldUseSweetistics(engine: EngineMode, hasApiKey: boolean): boolean {
+  if (engine === 'sweetistics') return true;
+  if (engine === 'graphql') return false;
+  return hasApiKey; // auto
+}
+
+function printTweets(
+  tweets: TweetData[],
+  opts: { json?: boolean; emptyMessage?: string; showSeparator?: boolean } = {},
+) {
+  if (opts.json) {
+    console.log(JSON.stringify(tweets, null, 2));
+    return;
+  }
+  if (tweets.length === 0) {
+    console.log(opts.emptyMessage ?? 'No tweets found.');
+    return;
+  }
+  for (const tweet of tweets) {
+    console.log(`\n@${tweet.author.username} (${tweet.author.name}):`);
+    console.log(tweet.text);
+    if (tweet.createdAt) {
+      console.log(`📅 ${tweet.createdAt}`);
+    }
+    console.log(`🔗 https://x.com/${tweet.author.username}/status/${tweet.id}`);
+    if (opts.showSeparator ?? true) {
+      console.log('─'.repeat(50));
+    }
+  }
+}
+
 // Tweet command
 program
   .command('tweet')
@@ -47,8 +93,14 @@ program
   .action(async (text: string) => {
     const opts = program.opts();
     const sweetistics = resolveSweetisticsConfig(opts);
+    const engine = resolveEngineMode(opts.engine);
+    const useSweetistics = shouldUseSweetistics(engine, Boolean(sweetistics.apiKey));
 
-    if (sweetistics.apiKey) {
+    if (useSweetistics) {
+      if (!sweetistics.apiKey) {
+        console.error('❌ Sweetistics engine selected but no API key provided.');
+        process.exit(1);
+      }
       try {
         const client = new SweetisticsClient({
           baseUrl: sweetistics.baseUrl,
@@ -110,9 +162,15 @@ program
   .action(async (tweetIdOrUrl: string, text: string) => {
     const opts = program.opts();
     const sweetistics = resolveSweetisticsConfig(opts);
+    const engine = resolveEngineMode(opts.engine);
+    const useSweetistics = shouldUseSweetistics(engine, Boolean(sweetistics.apiKey));
     const tweetId = extractTweetId(tweetIdOrUrl);
 
-    if (sweetistics.apiKey) {
+    if (useSweetistics) {
+      if (!sweetistics.apiKey) {
+        console.error('❌ Sweetistics engine selected but no API key provided.');
+        process.exit(1);
+      }
       try {
         const client = new SweetisticsClient({
           baseUrl: sweetistics.baseUrl,
@@ -175,6 +233,37 @@ program
   .option('--json', 'Output as JSON')
   .action(async (tweetIdOrUrl: string, cmdOpts: { json?: boolean }) => {
     const opts = program.opts();
+    const sweetistics = resolveSweetisticsConfig(opts);
+    const engine = resolveEngineMode(opts.engine);
+    const useSweetistics = shouldUseSweetistics(engine, Boolean(sweetistics.apiKey));
+
+    const tweetId = extractTweetId(tweetIdOrUrl);
+    if (useSweetistics) {
+      if (!sweetistics.apiKey) {
+        console.error('❌ Sweetistics engine selected but no API key provided.');
+        process.exit(1);
+      }
+      const client = new SweetisticsClient({ baseUrl: sweetistics.baseUrl, apiKey: sweetistics.apiKey });
+      const result = await client.read(tweetId);
+      if (result.success && result.tweet) {
+        if (cmdOpts.json) {
+          console.log(JSON.stringify(result.tweet, null, 2));
+        } else {
+          console.log(`@${result.tweet.author.username} (${result.tweet.author.name}):`);
+          console.log(result.tweet.text);
+          if (result.tweet.createdAt) {
+            console.log(`\n📅 ${result.tweet.createdAt}`);
+          }
+          console.log(
+            `❤️ ${result.tweet.likeCount ?? 0}  🔁 ${result.tweet.retweetCount ?? 0}  💬 ${result.tweet.replyCount ?? 0}`,
+          );
+        }
+        return;
+      }
+      console.error(`❌ Failed to read tweet via Sweetistics: ${result.error ?? 'Unknown error'}`);
+      process.exit(1);
+    }
+
     const { cookies, warnings } = await resolveCredentials({
       authToken: opts.authToken,
       ct0: opts.ct0,
@@ -190,7 +279,6 @@ program
       process.exit(1);
     }
 
-    const tweetId = extractTweetId(tweetIdOrUrl);
     const client = new TwitterClient({ cookies });
     const result = await client.getTweet(tweetId);
 
@@ -213,15 +301,33 @@ program
     }
   });
 
-// Search command - find tweets
+// Replies command - list replies to a tweet
 program
-  .command('search')
-  .description('Search for tweets')
-  .argument('<query>', 'Search query (e.g., "@clawdbot" or "from:clawdbot")')
-  .option('-n, --count <number>', 'Number of tweets to fetch', '10')
+  .command('replies')
+  .description('List replies to a tweet (by ID or URL)')
+  .argument('<tweet-id-or-url>', 'Tweet ID or URL')
   .option('--json', 'Output as JSON')
-  .action(async (query: string, cmdOpts: { count?: string; json?: boolean }) => {
+  .action(async (tweetIdOrUrl: string, cmdOpts: { json?: boolean }) => {
     const opts = program.opts();
+    const sweetistics = resolveSweetisticsConfig(opts);
+    const engine = resolveEngineMode(opts.engine);
+    const useSweetistics = shouldUseSweetistics(engine, Boolean(sweetistics.apiKey));
+    const tweetId = extractTweetId(tweetIdOrUrl);
+    if (useSweetistics) {
+      if (!sweetistics.apiKey) {
+        console.error('❌ Sweetistics engine selected but no API key provided.');
+        process.exit(1);
+      }
+      const client = new SweetisticsClient({ baseUrl: sweetistics.baseUrl, apiKey: sweetistics.apiKey });
+      const result = await client.replies(tweetId);
+      if (result.success && result.tweets) {
+        printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No replies found.' });
+        return;
+      }
+      console.error(`❌ Failed to fetch replies via Sweetistics: ${result.error}`);
+      process.exit(1);
+    }
+
     const { cookies, warnings } = await resolveCredentials({
       authToken: opts.authToken,
       ct0: opts.ct0,
@@ -238,27 +344,118 @@ program
     }
 
     const client = new TwitterClient({ cookies });
+    const result = await client.getReplies(tweetId);
+
+    if (result.success && result.tweets) {
+      printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No replies found.' });
+    } else {
+      console.error(`❌ Failed to fetch replies: ${result.error}`);
+      process.exit(1);
+    }
+  });
+
+// Thread command - show full conversation thread
+program
+  .command('thread')
+  .description('Show the full conversation thread containing the tweet')
+  .argument('<tweet-id-or-url>', 'Tweet ID or URL')
+  .option('--json', 'Output as JSON')
+  .action(async (tweetIdOrUrl: string, cmdOpts: { json?: boolean }) => {
+    const opts = program.opts();
+    const sweetistics = resolveSweetisticsConfig(opts);
+    const engine = resolveEngineMode(opts.engine);
+    const useSweetistics = shouldUseSweetistics(engine, Boolean(sweetistics.apiKey));
+    const tweetId = extractTweetId(tweetIdOrUrl);
+    if (useSweetistics) {
+      if (!sweetistics.apiKey) {
+        console.error('❌ Sweetistics engine selected but no API key provided.');
+        process.exit(1);
+      }
+      const client = new SweetisticsClient({ baseUrl: sweetistics.baseUrl, apiKey: sweetistics.apiKey });
+      const result = await client.thread(tweetId);
+      if (result.success && result.tweets) {
+        printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No thread tweets found.' });
+        return;
+      }
+      console.error(`❌ Failed to fetch thread via Sweetistics: ${result.error}`);
+      process.exit(1);
+    }
+
+    const { cookies, warnings } = await resolveCredentials({
+      authToken: opts.authToken,
+      ct0: opts.ct0,
+      chromeProfile: opts.chromeProfile,
+    });
+
+    for (const warning of warnings) {
+      console.error(`⚠️  ${warning}`);
+    }
+
+    if (!cookies.authToken || !cookies.ct0) {
+      console.error('❌ Missing required credentials');
+      process.exit(1);
+    }
+
+    const client = new TwitterClient({ cookies });
+    const result = await client.getThread(tweetId);
+
+    if (result.success && result.tweets) {
+      printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No thread tweets found.' });
+    } else {
+      console.error(`❌ Failed to fetch thread: ${result.error}`);
+      process.exit(1);
+    }
+  });
+
+// Search command - find tweets
+program
+  .command('search')
+  .description('Search for tweets')
+  .argument('<query>', 'Search query (e.g., "@clawdbot" or "from:clawdbot")')
+  .option('-n, --count <number>', 'Number of tweets to fetch', '10')
+  .option('--json', 'Output as JSON')
+  .action(async (query: string, cmdOpts: { count?: string; json?: boolean }) => {
+    const opts = program.opts();
     const count = parseInt(cmdOpts.count || '10', 10);
+    const sweetistics = resolveSweetisticsConfig(opts);
+    const engine = resolveEngineMode(opts.engine);
+    const useSweetistics = shouldUseSweetistics(engine, Boolean(sweetistics.apiKey));
+
+    if (useSweetistics) {
+      if (!sweetistics.apiKey) {
+        console.error('❌ Sweetistics engine selected but no API key provided.');
+        process.exit(1);
+      }
+      const client = new SweetisticsClient({ baseUrl: sweetistics.baseUrl, apiKey: sweetistics.apiKey });
+      const result = await client.search(query, count);
+      if (result.success && result.tweets) {
+        printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No tweets found.' });
+        return;
+      }
+      console.error(`❌ Search failed via Sweetistics: ${result.error}`);
+      process.exit(1);
+    }
+
+    const { cookies, warnings } = await resolveCredentials({
+      authToken: opts.authToken,
+      ct0: opts.ct0,
+      chromeProfile: opts.chromeProfile,
+    });
+
+    for (const warning of warnings) {
+      console.error(`⚠️  ${warning}`);
+    }
+
+    if (!cookies.authToken || !cookies.ct0) {
+      console.error('❌ Missing required credentials');
+      process.exit(1);
+    }
+
+    const client = new TwitterClient({ cookies });
     const result = await client.search(query, count);
 
     if (result.success && result.tweets) {
-      if (cmdOpts.json) {
-        console.log(JSON.stringify(result.tweets, null, 2));
-      } else {
-        if (result.tweets.length === 0) {
-          console.log('No tweets found.');
-        } else {
-          for (const tweet of result.tweets) {
-            console.log(`\n@${tweet.author.username} (${tweet.author.name}):`);
-            console.log(tweet.text);
-            if (tweet.createdAt) {
-              console.log(`📅 ${tweet.createdAt}`);
-            }
-            console.log(`🔗 https://x.com/${tweet.author.username}/status/${tweet.id}`);
-            console.log('─'.repeat(50));
-          }
-        }
-      }
+      printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No tweets found.' });
     } else {
       console.error(`❌ Search failed: ${result.error}`);
       process.exit(1);
@@ -273,6 +470,26 @@ program
   .option('--json', 'Output as JSON')
   .action(async (cmdOpts: { count?: string; json?: boolean }) => {
     const opts = program.opts();
+    const count = parseInt(cmdOpts.count || '10', 10);
+    const sweetistics = resolveSweetisticsConfig(opts);
+    const engine = resolveEngineMode(opts.engine);
+    const useSweetistics = shouldUseSweetistics(engine, Boolean(sweetistics.apiKey));
+
+    if (useSweetistics) {
+      if (!sweetistics.apiKey) {
+        console.error('❌ Sweetistics engine selected but no API key provided.');
+        process.exit(1);
+      }
+      const client = new SweetisticsClient({ baseUrl: sweetistics.baseUrl, apiKey: sweetistics.apiKey });
+      const result = await client.search('@clawdbot', count);
+      if (result.success && result.tweets) {
+        printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No mentions found.' });
+        return;
+      }
+      console.error(`❌ Failed to fetch mentions via Sweetistics: ${result.error}`);
+      process.exit(1);
+    }
+
     const { cookies, warnings } = await resolveCredentials({
       authToken: opts.authToken,
       ct0: opts.ct0,
@@ -289,28 +506,10 @@ program
     }
 
     const client = new TwitterClient({ cookies });
-    const count = parseInt(cmdOpts.count || '10', 10);
     const result = await client.search('@clawdbot', count);
 
     if (result.success && result.tweets) {
-      if (cmdOpts.json) {
-        console.log(JSON.stringify(result.tweets, null, 2));
-      } else {
-        if (result.tweets.length === 0) {
-          console.log('No mentions found.');
-        } else {
-          console.log(`Found ${result.tweets.length} mentions:\n`);
-          for (const tweet of result.tweets) {
-            console.log(`@${tweet.author.username} (${tweet.author.name}):`);
-            console.log(tweet.text);
-            if (tweet.createdAt) {
-              console.log(`📅 ${tweet.createdAt}`);
-            }
-            console.log(`🔗 https://x.com/${tweet.author.username}/status/${tweet.id}`);
-            console.log('─'.repeat(50));
-          }
-        }
-      }
+      printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No mentions found.' });
     } else {
       console.error(`❌ Failed to fetch mentions: ${result.error}`);
       process.exit(1);
