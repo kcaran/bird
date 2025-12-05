@@ -137,6 +137,8 @@ describe('SweetisticsClient', () => {
     expect(result.tweets?.[0].id).toBe('2');
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toContain('/api/trpc/tweets.getConversation');
+    const params = new URL(url as string).searchParams.get('input');
+    expect(params).toBe(JSON.stringify({ tweetId: '1', force: 'true' }));
     expect((init as RequestInit).headers).toMatchObject({ authorization: 'Bearer sweet-test' });
   });
 
@@ -165,6 +167,8 @@ describe('SweetisticsClient', () => {
     expect(result.tweets?.length).toBe(2);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toContain('/api/trpc/tweets.getConversation');
+    const params = new URL(url as string).searchParams.get('input');
+    expect(params).toBe(JSON.stringify({ tweetId: '1', force: 'true' }));
     expect((init as RequestInit).headers).toMatchObject({ authorization: 'Bearer sweet-test' });
   });
 

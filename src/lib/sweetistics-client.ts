@@ -380,10 +380,15 @@ export class SweetisticsClient {
 
   private async fetchConversation(
     tweetId: string,
-    options: { excludeRoot: boolean },
+    options: { excludeRoot: boolean; force?: boolean } = { excludeRoot: false, force: true },
   ): Promise<SweetisticsTimelineResult> {
     const url = new URL(`${this.baseUrl}/api/trpc/tweets.getConversation`);
-    url.searchParams.set('input', JSON.stringify({ tweetId }));
+    const input: Record<string, unknown> = { tweetId };
+    // Always request a fresh conversation to avoid cached Sweetistics data unless explicitly disabled
+    if (options.force ?? true) {
+      input.force = 'true';
+    }
+    url.searchParams.set('input', JSON.stringify(input));
 
     let response: Response;
     try {
