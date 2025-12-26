@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.4.0 — Unreleased
+## 0.4.1 — Unreleased
+
+## 0.4.0 — 2025-12-26
 
 ### Added
 - Cookie source selection: `--cookie-source safari|chrome|firefox` (repeatable) + `cookieSource` config (string or array).
