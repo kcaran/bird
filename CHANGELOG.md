@@ -7,6 +7,8 @@
 
 ### Changed
 - `mentions`: no hardcoded user; defaults to authenticated user or accepts `--user @handle`.
+- GraphQL query ID updater: correctly pairs `operationName` ↔ `queryId` (CreateTweet/CreateRetweet/etc).
+- `build:dist`: copies `src/lib/query-ids.json` into `dist/lib/query-ids.json` (keeps `dist/` in sync).
 
 ## 0.1.1 — 2025-12-26
 

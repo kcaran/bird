@@ -28,6 +28,18 @@ const BUNDLE_URL_REGEX =
   /https:\/\/abs\.twimg\.com\/responsive-web\/client-web(?:-legacy)?\/[A-Za-z0-9.-]+\.js/g;
 
 const OPERATION_PATTERNS = [
+  // Modern bundles export operations like:
+  //   e.exports={queryId:"...",operationName:"CreateTweet",operationType:"mutation",...}
+  {
+    regex: /e\.exports=\{queryId\s*:\s*["']([^"']+)["']\s*,\s*operationName\s*:\s*["']([^"']+)["']/gs,
+    operationGroup: 2,
+    queryIdGroup: 1,
+  },
+  {
+    regex: /e\.exports=\{operationName\s*:\s*["']([^"']+)["']\s*,\s*queryId\s*:\s*["']([^"']+)["']/gs,
+    operationGroup: 1,
+    queryIdGroup: 2,
+  },
   {
     regex: /operationName\s*[:=]\s*["']([^"']+)["'](.{0,4000}?)queryId\s*[:=]\s*["']([^"']+)["']/gs,
     operationGroup: 1,
