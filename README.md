@@ -34,6 +34,7 @@ bird mentions --user @steipete -n 5
 
 - `bird tweet "<text>"` — post a new tweet.
 - `bird reply <tweet-id-or-url> "<text>"` — reply to a tweet using its ID or URL.
+- `bird help [command]` — show help (or help for a subcommand).
 - `bird read <tweet-id-or-url> [--json]` — fetch tweet content as text or JSON.
 - `bird <tweet-id-or-url> [--json]` — shorthand for `read` when only a URL or ID is provided.
 - `bird replies <tweet-id-or-url> [--json]` — list replies to a tweet.
@@ -51,6 +52,9 @@ bird mentions --user @steipete -n 5
 
 Global options:
 - `--timeout <ms>`: abort requests after the given timeout (milliseconds).
+- `--plain`: stable output (no emoji, no color).
+- `--no-emoji`: disable emoji output.
+- `--no-color`: disable ANSI colors (or set `NO_COLOR=1`).
 
 ## Authentication (GraphQL)
 
@@ -92,6 +96,7 @@ Environment shortcuts:
 
 - `--json` prints raw tweet objects for read/replies/thread/search/mentions.
 - `read` returns full text for Notes and Articles when present.
+- Use `--plain` for stable, script-friendly output (no emoji, no color).
 
 ## Version
 

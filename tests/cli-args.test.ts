@@ -2,7 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { looksLikeTweetInput, resolveCliInvocation } from '../src/lib/cli-args.js';
 
 describe('cli-args', () => {
-  const known = new Set(['tweet', 'reply', 'read', 'replies', 'thread', 'search', 'mentions', 'whoami', 'check']);
+  const known = new Set([
+    'tweet',
+    'reply',
+    'read',
+    'replies',
+    'thread',
+    'search',
+    'mentions',
+    'help',
+    'whoami',
+    'check',
+  ]);
 
   it('detects tweet URLs', () => {
     expect(looksLikeTweetInput('https://x.com/user/status/1234567890')).toBe(true);

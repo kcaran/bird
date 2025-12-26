@@ -20,18 +20,40 @@ import { resolveCredentials } from './lib/cookies.js';
 import { type EngineMode, resolveEngineMode, shouldUseSweetistics } from './lib/engine.js';
 import { extractTweetId } from './lib/extract-tweet-id.js';
 import { mentionsQueryFromUserOption, normalizeHandle } from './lib/normalize-handle.js';
+import {
+  formatStatsLine,
+  labelPrefix,
+  type OutputConfig,
+  resolveOutputConfigFromArgv,
+  resolveOutputConfigFromCommander,
+  statusPrefix,
+} from './lib/output.js';
 import { SweetisticsClient } from './lib/sweetistics-client.js';
 import { type TweetData, TwitterClient } from './lib/twitter-client.js';
 import { getCliVersion } from './lib/version.js';
 
 const program = new Command();
 
+const rawArgs = process.argv.slice(2);
+const normalizedArgs = rawArgs[0] === '--' ? rawArgs.slice(1) : rawArgs;
 const isTty = process.stdout.isTTY;
+let output: OutputConfig = resolveOutputConfigFromArgv(normalizedArgs, process.env, isTty);
+kleur.enabled = output.color;
+
 const wrap = (styler: (text: string) => string) => (text: string) => (isTty ? styler(text) : text);
 const collect = (value: string, previous: string[] = []) => {
   previous.push(value);
   return previous;
 };
+
+const p = (kind: Parameters<typeof statusPrefix>[0]) => statusPrefix(kind, output);
+const l = (kind: Parameters<typeof labelPrefix>[0]) => labelPrefix(kind, output);
+
+function applyOutputFromCommand(command: Command) {
+  const opts = command.optsWithGlobals() as { plain?: boolean; emoji?: boolean; color?: boolean };
+  output = resolveOutputConfigFromCommander(opts, process.env, isTty);
+  kleur.enabled = output.color;
+}
 
 const colors = {
   banner: wrap((t) => kleur.bold().blue(t)),
@@ -65,7 +87,9 @@ function readConfigFile(path: string): Partial<BirdConfig> {
     return parsed ?? {};
   } catch (error) {
     console.error(
-      colors.muted(`⚠️ Failed to parse config at ${path}: ${error instanceof Error ? error.message : String(error)}`),
+      colors.muted(
+        `${p('warn')}Failed to parse config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      ),
     );
     return {};
   }
@@ -91,6 +115,7 @@ const KNOWN_COMMANDS = new Set([
   'thread',
   'search',
   'mentions',
+  'help',
   'whoami',
   'check',
 ]);
@@ -135,7 +160,14 @@ program
     'Engine: graphql | sweetistics | auto',
     process.env.BIRD_ENGINE || config.engine || 'auto',
   )
-  .option('--timeout <ms>', 'Request timeout in milliseconds');
+  .option('--timeout <ms>', 'Request timeout in milliseconds')
+  .option('--plain', 'Plain output (stable, no emoji, no color)')
+  .option('--no-emoji', 'Disable emoji output')
+  .option('--no-color', 'Disable ANSI colors (or set NO_COLOR)');
+
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  applyOutputFromCommand(actionCommand);
+});
 
 type MediaSpec = { path: string; alt?: string; mime: string; buffer: Buffer };
 
@@ -207,14 +239,33 @@ function printTweets(
     console.log(`\n@${tweet.author.username} (${tweet.author.name}):`);
     console.log(tweet.text);
     if (tweet.createdAt) {
-      console.log(`📅 ${tweet.createdAt}`);
+      console.log(`${l('date')}${tweet.createdAt}`);
     }
-    console.log(`🔗 https://x.com/${tweet.author.username}/status/${tweet.id}`);
+    console.log(`${l('url')}https://x.com/${tweet.author.username}/status/${tweet.id}`);
     if (opts.showSeparator ?? true) {
       console.log('─'.repeat(50));
     }
   }
 }
+
+program
+  .command('help [command]')
+  .description('Show help for a command')
+  .action((commandName?: string) => {
+    if (!commandName) {
+      program.outputHelp();
+      return;
+    }
+
+    const cmd = program.commands.find((c) => c.name() === commandName);
+    if (!cmd) {
+      console.error(`${p('err')}Unknown command: ${commandName}`);
+      process.exitCode = 2;
+      return;
+    }
+
+    cmd.outputHelp();
+  });
 
 // Tweet command
 program
@@ -228,7 +279,7 @@ program
     try {
       media = loadMedia({ media: opts.media ?? [], alts: opts.alt ?? [] });
     } catch (error) {
-      console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`${p('err')}${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
     const sweetistics = resolveSweetisticsConfig({
@@ -240,7 +291,7 @@ program
 
     if (useSweetistics) {
       if (!sweetistics.apiKey) {
-        console.error('❌ Sweetistics engine selected but no API key provided.');
+        console.error(`${p('err')}Sweetistics engine selected but no API key provided.`);
         process.exit(1);
       }
       try {
@@ -267,18 +318,18 @@ program
         }
         const result = await client.tweet(text, undefined, mediaIds);
         if (result.success) {
-          console.log('✅ Tweet posted via Sweetistics!');
+          console.log(`${p('ok')}Tweet posted via Sweetistics!`);
           if (result.tweetId) {
-            console.log(`🔗 https://x.com/i/status/${result.tweetId}`);
+            console.log(`${l('url')}https://x.com/i/status/${result.tweetId}`);
           }
           return;
         }
-        console.error(`❌ Sweetistics post failed: ${result.error ?? 'Unknown error'}`);
+        console.error(`${p('err')}Sweetistics post failed: ${result.error ?? 'Unknown error'}`);
         process.exit(1);
       } catch (error) {
-        console.error(`❌ Sweetistics error: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`${p('err')}Sweetistics error: ${error instanceof Error ? error.message : String(error)}`);
         if (error instanceof Error && /(^|\\b)INTERNAL_ERROR(\\b|$)|An unexpected error occurred/.test(error.message)) {
-          console.error('ℹ️ Hint: Sweetistics media upload likely needs Twitter OAuth with `media.write` scope.');
+          console.error(`${p('hint')}Sweetistics media upload likely needs Twitter OAuth with \`media.write\` scope.`);
         }
         process.exit(1);
       }
@@ -286,7 +337,7 @@ program
 
     if (media.length > 0) {
       console.error(
-        '❌ Media uploads are only supported via Sweetistics. Provide SWEETISTICS_API_KEY or --engine sweetistics.',
+        `${p('err')}Media uploads are only supported via Sweetistics. Provide SWEETISTICS_API_KEY or --engine sweetistics.`,
       );
       process.exit(1);
     }
@@ -301,42 +352,42 @@ program
     });
 
     for (const warning of warnings) {
-      console.error(`⚠️ ${warning}`);
+      console.error(`${p('warn')}${warning}`);
     }
 
     if (!cookies.authToken || !cookies.ct0) {
-      console.error('❌ Missing required credentials');
+      console.error(`${p('err')}Missing required credentials`);
       process.exit(1);
     }
 
     if (cookies.source) {
-      console.error(`📍 Using credentials from: ${cookies.source}`);
+      console.error(`${l('source')}${cookies.source}`);
     }
 
     const client = new TwitterClient({ cookies, timeoutMs });
     const result = await client.tweet(text);
 
     if (result.success) {
-      console.log('✅ Tweet posted successfully!');
-      console.log(`🔗 https://x.com/i/status/${result.tweetId}`);
+      console.log(`${p('ok')}Tweet posted successfully!`);
+      console.log(`${l('url')}https://x.com/i/status/${result.tweetId}`);
     } else if (sweetistics.apiKey) {
-      console.error(`⚠️ GraphQL tweet failed (${result.error}); trying Sweetistics fallback...`);
+      console.error(`${p('warn')}GraphQL tweet failed (${result.error}); trying Sweetistics fallback...`);
       const fallback = await new SweetisticsClient({
         baseUrl: sweetistics.baseUrl,
         apiKey: sweetistics.apiKey,
         timeoutMs,
       }).tweet(text);
       if (fallback.success) {
-        console.log('✅ Tweet posted via Sweetistics (fallback)!');
+        console.log(`${p('ok')}Tweet posted via Sweetistics (fallback)!`);
         if (fallback.tweetId) {
-          console.log(`🔗 https://x.com/i/status/${fallback.tweetId}`);
+          console.log(`${l('url')}https://x.com/i/status/${fallback.tweetId}`);
         }
       } else {
-        console.error(`❌ Failed to post tweet: ${result.error} | Sweetistics fallback: ${fallback.error}`);
+        console.error(`${p('err')}Failed to post tweet: ${result.error} | Sweetistics fallback: ${fallback.error}`);
         process.exit(1);
       }
     } else {
-      console.error(`❌ Failed to post tweet: ${result.error}`);
+      console.error(`${p('err')}Failed to post tweet: ${result.error}`);
       process.exit(1);
     }
   });
@@ -354,7 +405,7 @@ program
     try {
       media = loadMedia({ media: opts.media ?? [], alts: opts.alt ?? [] });
     } catch (error) {
-      console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`${p('err')}${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
     const sweetistics = resolveSweetisticsConfig({
@@ -367,7 +418,7 @@ program
 
     if (useSweetistics) {
       if (!sweetistics.apiKey) {
-        console.error('❌ Sweetistics engine selected but no API key provided.');
+        console.error(`${p('err')}Sweetistics engine selected but no API key provided.`);
         process.exit(1);
       }
       try {
@@ -394,18 +445,18 @@ program
         }
         const result = await client.tweet(text, tweetId, mediaIds);
         if (result.success) {
-          console.log('✅ Reply posted via Sweetistics!');
+          console.log(`${p('ok')}Reply posted via Sweetistics!`);
           if (result.tweetId) {
-            console.log(`🔗 https://x.com/i/status/${result.tweetId}`);
+            console.log(`${l('url')}https://x.com/i/status/${result.tweetId}`);
           }
           return;
         }
-        console.error(`❌ Sweetistics reply failed: ${result.error ?? 'Unknown error'}`);
+        console.error(`${p('err')}Sweetistics reply failed: ${result.error ?? 'Unknown error'}`);
         process.exit(1);
       } catch (error) {
-        console.error(`❌ Sweetistics error: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`${p('err')}Sweetistics error: ${error instanceof Error ? error.message : String(error)}`);
         if (error instanceof Error && /(^|\\b)INTERNAL_ERROR(\\b|$)|An unexpected error occurred/.test(error.message)) {
-          console.error('ℹ️ Hint: Sweetistics media upload likely needs Twitter OAuth with `media.write` scope.');
+          console.error(`${p('hint')}Sweetistics media upload likely needs Twitter OAuth with \`media.write\` scope.`);
         }
         process.exit(1);
       }
@@ -413,7 +464,7 @@ program
 
     if (media.length > 0) {
       console.error(
-        '❌ Media uploads are only supported via Sweetistics. Provide SWEETISTICS_API_KEY or --engine sweetistics.',
+        `${p('err')}Media uploads are only supported via Sweetistics. Provide SWEETISTICS_API_KEY or --engine sweetistics.`,
       );
       process.exit(1);
     }
@@ -428,44 +479,44 @@ program
     });
 
     for (const warning of warnings) {
-      console.error(`⚠️ ${warning}`);
+      console.error(`${p('warn')}${warning}`);
     }
 
     if (!cookies.authToken || !cookies.ct0) {
-      console.error('❌ Missing required credentials');
+      console.error(`${p('err')}Missing required credentials`);
       process.exit(1);
     }
 
     if (cookies.source) {
-      console.error(`📍 Using credentials from: ${cookies.source}`);
+      console.error(`${l('source')}${cookies.source}`);
     }
 
-    console.error(`📝 Replying to tweet: ${tweetId}`);
+    console.error(`${p('info')}Replying to tweet: ${tweetId}`);
 
     const client = new TwitterClient({ cookies, timeoutMs });
     const result = await client.reply(text, tweetId);
 
     if (result.success) {
-      console.log('✅ Reply posted successfully!');
-      console.log(`🔗 https://x.com/i/status/${result.tweetId}`);
+      console.log(`${p('ok')}Reply posted successfully!`);
+      console.log(`${l('url')}https://x.com/i/status/${result.tweetId}`);
     } else if (sweetistics.apiKey) {
-      console.error(`⚠️ GraphQL reply failed (${result.error}); trying Sweetistics fallback...`);
+      console.error(`${p('warn')}GraphQL reply failed (${result.error}); trying Sweetistics fallback...`);
       const fallback = await new SweetisticsClient({
         baseUrl: sweetistics.baseUrl,
         apiKey: sweetistics.apiKey,
         timeoutMs,
       }).tweet(text, tweetId);
       if (fallback.success) {
-        console.log('✅ Reply posted via Sweetistics (fallback)!');
+        console.log(`${p('ok')}Reply posted via Sweetistics (fallback)!`);
         if (fallback.tweetId) {
-          console.log(`🔗 https://x.com/i/status/${fallback.tweetId}`);
+          console.log(`${l('url')}https://x.com/i/status/${fallback.tweetId}`);
         }
       } else {
-        console.error(`❌ Failed to post reply: ${result.error} | Sweetistics fallback: ${fallback.error}`);
+        console.error(`${p('err')}Failed to post reply: ${result.error} | Sweetistics fallback: ${fallback.error}`);
         process.exit(1);
       }
     } else {
-      console.error(`❌ Failed to post reply: ${result.error}`);
+      console.error(`${p('err')}Failed to post reply: ${result.error}`);
       process.exit(1);
     }
   });
@@ -489,7 +540,7 @@ program
     const tweetId = extractTweetId(tweetIdOrUrl);
     if (useSweetistics) {
       if (!sweetistics.apiKey) {
-        console.error('❌ Sweetistics engine selected but no API key provided.');
+        console.error(`${p('err')}Sweetistics engine selected but no API key provided.`);
         process.exit(1);
       }
       const client = new SweetisticsClient({
@@ -505,15 +556,13 @@ program
           console.log(`@${result.tweet.author.username} (${result.tweet.author.name}):`);
           console.log(result.tweet.text);
           if (result.tweet.createdAt) {
-            console.log(`\n📅 ${result.tweet.createdAt}`);
+            console.log(`\n${l('date')}${result.tweet.createdAt}`);
           }
-          console.log(
-            `❤️ ${result.tweet.likeCount ?? 0}  🔁 ${result.tweet.retweetCount ?? 0}  💬 ${result.tweet.replyCount ?? 0}`,
-          );
+          console.log(formatStatsLine(result.tweet, output));
         }
         return;
       }
-      console.error(`❌ Failed to read tweet via Sweetistics: ${result.error ?? 'Unknown error'}`);
+      console.error(`${p('err')}Failed to read tweet via Sweetistics: ${result.error ?? 'Unknown error'}`);
       process.exit(1);
     }
 
@@ -527,11 +576,11 @@ program
     });
 
     for (const warning of warnings) {
-      console.error(`⚠️ ${warning}`);
+      console.error(`${p('warn')}${warning}`);
     }
 
     if (!cookies.authToken || !cookies.ct0) {
-      console.error('❌ Missing required credentials');
+      console.error(`${p('err')}Missing required credentials`);
       process.exit(1);
     }
 
@@ -545,14 +594,12 @@ program
         console.log(`@${result.tweet.author.username} (${result.tweet.author.name}):`);
         console.log(result.tweet.text);
         if (result.tweet.createdAt) {
-          console.log(`\n📅 ${result.tweet.createdAt}`);
+          console.log(`\n${l('date')}${result.tweet.createdAt}`);
         }
-        console.log(
-          `❤️ ${result.tweet.likeCount ?? 0}  🔁 ${result.tweet.retweetCount ?? 0}  💬 ${result.tweet.replyCount ?? 0}`,
-        );
+        console.log(formatStatsLine(result.tweet, output));
       }
     } else if (sweetistics.apiKey) {
-      console.error(`⚠️ GraphQL read failed (${result.error}); trying Sweetistics fallback...`);
+      console.error(`${p('warn')}GraphQL read failed (${result.error}); trying Sweetistics fallback...`);
       const fallback = await new SweetisticsClient({
         baseUrl: sweetistics.baseUrl,
         apiKey: sweetistics.apiKey,
@@ -565,18 +612,16 @@ program
           console.log(`@${fallback.tweet.author.username} (${fallback.tweet.author.name}):`);
           console.log(fallback.tweet.text);
           if (fallback.tweet.createdAt) {
-            console.log(`\n📅 ${fallback.tweet.createdAt}`);
+            console.log(`\n${l('date')}${fallback.tweet.createdAt}`);
           }
-          console.log(
-            `❤️ ${fallback.tweet.likeCount ?? 0}  🔁 ${fallback.tweet.retweetCount ?? 0}  💬 ${fallback.tweet.replyCount ?? 0}`,
-          );
+          console.log(formatStatsLine(fallback.tweet, output));
         }
       } else {
-        console.error(`❌ Failed to read tweet: ${result.error} | Sweetistics fallback: ${fallback.error}`);
+        console.error(`${p('err')}Failed to read tweet: ${result.error} | Sweetistics fallback: ${fallback.error}`);
         process.exit(1);
       }
     } else {
-      console.error(`❌ Failed to read tweet: ${result.error}`);
+      console.error(`${p('err')}Failed to read tweet: ${result.error}`);
       process.exit(1);
     }
   });
@@ -599,7 +644,7 @@ program
     const tweetId = extractTweetId(tweetIdOrUrl);
     if (useSweetistics) {
       if (!sweetistics.apiKey) {
-        console.error('❌ Sweetistics engine selected but no API key provided.');
+        console.error(`${p('err')}Sweetistics engine selected but no API key provided.`);
         process.exit(1);
       }
       const client = new SweetisticsClient({
@@ -612,7 +657,7 @@ program
         printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No replies found.' });
         return;
       }
-      console.error(`❌ Failed to fetch replies via Sweetistics: ${result.error}`);
+      console.error(`${p('err')}Failed to fetch replies via Sweetistics: ${result.error}`);
       process.exit(1);
     }
 
@@ -624,11 +669,11 @@ program
     });
 
     for (const warning of warnings) {
-      console.error(`⚠️ ${warning}`);
+      console.error(`${p('warn')}${warning}`);
     }
 
     if (!cookies.authToken || !cookies.ct0) {
-      console.error('❌ Missing required credentials');
+      console.error(`${p('err')}Missing required credentials`);
       process.exit(1);
     }
 
@@ -638,7 +683,7 @@ program
     if (result.success && result.tweets) {
       printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No replies found.' });
     } else if (sweetistics.apiKey) {
-      console.error(`⚠️ GraphQL replies failed (${result.error}); trying Sweetistics fallback...`);
+      console.error(`${p('warn')}GraphQL replies failed (${result.error}); trying Sweetistics fallback...`);
       const fallback = await new SweetisticsClient({
         baseUrl: sweetistics.baseUrl,
         apiKey: sweetistics.apiKey,
@@ -647,11 +692,11 @@ program
       if (fallback.success && fallback.tweets) {
         printTweets(fallback.tweets, { json: cmdOpts.json, emptyMessage: 'No replies found.' });
       } else {
-        console.error(`❌ Failed to fetch replies: ${result.error} | Sweetistics fallback: ${fallback.error}`);
+        console.error(`${p('err')}Failed to fetch replies: ${result.error} | Sweetistics fallback: ${fallback.error}`);
         process.exit(1);
       }
     } else {
-      console.error(`❌ Failed to fetch replies: ${result.error}`);
+      console.error(`${p('err')}Failed to fetch replies: ${result.error}`);
       process.exit(1);
     }
   });
@@ -674,7 +719,7 @@ program
     const tweetId = extractTweetId(tweetIdOrUrl);
     if (useSweetistics) {
       if (!sweetistics.apiKey) {
-        console.error('❌ Sweetistics engine selected but no API key provided.');
+        console.error(`${p('err')}Sweetistics engine selected but no API key provided.`);
         process.exit(1);
       }
       const client = new SweetisticsClient({
@@ -687,7 +732,7 @@ program
         printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No thread tweets found.' });
         return;
       }
-      console.error(`❌ Failed to fetch thread via Sweetistics: ${result.error}`);
+      console.error(`${p('err')}Failed to fetch thread via Sweetistics: ${result.error}`);
       process.exit(1);
     }
 
@@ -699,11 +744,11 @@ program
     });
 
     for (const warning of warnings) {
-      console.error(`⚠️ ${warning}`);
+      console.error(`${p('warn')}${warning}`);
     }
 
     if (!cookies.authToken || !cookies.ct0) {
-      console.error('❌ Missing required credentials');
+      console.error(`${p('err')}Missing required credentials`);
       process.exit(1);
     }
 
@@ -713,7 +758,7 @@ program
     if (result.success && result.tweets) {
       printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No thread tweets found.' });
     } else if (sweetistics.apiKey) {
-      console.error(`⚠️ GraphQL thread failed (${result.error}); trying Sweetistics fallback...`);
+      console.error(`${p('warn')}GraphQL thread failed (${result.error}); trying Sweetistics fallback...`);
       const fallback = await new SweetisticsClient({
         baseUrl: sweetistics.baseUrl,
         apiKey: sweetistics.apiKey,
@@ -722,11 +767,11 @@ program
       if (fallback.success && fallback.tweets) {
         printTweets(fallback.tweets, { json: cmdOpts.json, emptyMessage: 'No thread tweets found.' });
       } else {
-        console.error(`❌ Failed to fetch thread: ${result.error} | Sweetistics fallback: ${fallback.error}`);
+        console.error(`${p('err')}Failed to fetch thread: ${result.error} | Sweetistics fallback: ${fallback.error}`);
         process.exit(1);
       }
     } else {
-      console.error(`❌ Failed to fetch thread: ${result.error}`);
+      console.error(`${p('err')}Failed to fetch thread: ${result.error}`);
       process.exit(1);
     }
   });
@@ -751,7 +796,7 @@ program
 
     if (useSweetistics) {
       if (!sweetistics.apiKey) {
-        console.error('❌ Sweetistics engine selected but no API key provided.');
+        console.error(`${p('err')}Sweetistics engine selected but no API key provided.`);
         process.exit(1);
       }
       const client = new SweetisticsClient({
@@ -764,7 +809,7 @@ program
         printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No tweets found.' });
         return;
       }
-      console.error(`❌ Search failed via Sweetistics: ${result.error}`);
+      console.error(`${p('err')}Search failed via Sweetistics: ${result.error}`);
       process.exit(1);
     }
 
@@ -776,11 +821,11 @@ program
     });
 
     for (const warning of warnings) {
-      console.error(`⚠️ ${warning}`);
+      console.error(`${p('warn')}${warning}`);
     }
 
     if (!cookies.authToken || !cookies.ct0) {
-      console.error('❌ Missing required credentials');
+      console.error(`${p('err')}Missing required credentials`);
       process.exit(1);
     }
 
@@ -790,7 +835,7 @@ program
     if (result.success && result.tweets) {
       printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No tweets found.' });
     } else if (sweetistics.apiKey) {
-      console.error(`⚠️ GraphQL search failed (${result.error}); trying Sweetistics fallback...`);
+      console.error(`${p('warn')}GraphQL search failed (${result.error}); trying Sweetistics fallback...`);
       const fallback = await new SweetisticsClient({
         baseUrl: sweetistics.baseUrl,
         apiKey: sweetistics.apiKey,
@@ -799,11 +844,11 @@ program
       if (fallback.success && fallback.tweets) {
         printTweets(fallback.tweets, { json: cmdOpts.json, emptyMessage: 'No tweets found.' });
       } else {
-        console.error(`❌ Search failed: ${result.error} | Sweetistics fallback: ${fallback.error}`);
+        console.error(`${p('err')}Search failed: ${result.error} | Sweetistics fallback: ${fallback.error}`);
         process.exit(1);
       }
     } else {
-      console.error(`❌ Search failed: ${result.error}`);
+      console.error(`${p('err')}Search failed: ${result.error}`);
       process.exit(1);
     }
   });
@@ -825,7 +870,7 @@ program
 
     const fromUserOpt = mentionsQueryFromUserOption(cmdOpts.user);
     if (fromUserOpt.error) {
-      console.error(`❌ ${fromUserOpt.error}`);
+      console.error(`${p('err')}${fromUserOpt.error}`);
       process.exit(2);
     }
 
@@ -833,7 +878,7 @@ program
 
     if (useSweetistics) {
       if (!sweetistics.apiKey) {
-        console.error('❌ Sweetistics engine selected but no API key provided.');
+        console.error(`${p('err')}Sweetistics engine selected but no API key provided.`);
         process.exit(1);
       }
       const client = new SweetisticsClient({
@@ -846,7 +891,9 @@ program
         const who = await client.getCurrentUser();
         const handle = normalizeHandle(who.user?.username);
         if (!handle) {
-          console.error(`❌ Could not determine current user (${who.error ?? 'Unknown error'}). Use --user <handle>.`);
+          console.error(
+            `${p('err')}Could not determine current user (${who.error ?? 'Unknown error'}). Use --user <handle>.`,
+          );
           process.exit(1);
         }
         query = `@${handle}`;
@@ -857,7 +904,7 @@ program
         printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No mentions found.' });
         return;
       }
-      console.error(`❌ Failed to fetch mentions via Sweetistics: ${result.error}`);
+      console.error(`${p('err')}Failed to fetch mentions via Sweetistics: ${result.error}`);
       process.exit(1);
     }
 
@@ -868,11 +915,11 @@ program
     });
 
     for (const warning of warnings) {
-      console.error(`⚠️ ${warning}`);
+      console.error(`${p('warn')}${warning}`);
     }
 
     if (!cookies.authToken || !cookies.ct0) {
-      console.error('❌ Missing required credentials');
+      console.error(`${p('err')}Missing required credentials`);
       process.exit(1);
     }
 
@@ -884,7 +931,7 @@ program
       if (!handle) {
         if (sweetistics.apiKey) {
           console.error(
-            `⚠️ Could not determine current user (${who.error ?? 'Unknown error'}); trying Sweetistics fallback...`,
+            `${p('warn')}Could not determine current user (${who.error ?? 'Unknown error'}); trying Sweetistics fallback...`,
           );
           const fallbackWho = await new SweetisticsClient({
             baseUrl: sweetistics.baseUrl,
@@ -893,12 +940,14 @@ program
           }).getCurrentUser();
           const fallbackHandle = normalizeHandle(fallbackWho.user?.username);
           if (!fallbackHandle) {
-            console.error(`❌ Could not determine current user. Use --user <handle>.`);
+            console.error(`${p('err')}Could not determine current user. Use --user <handle>.`);
             process.exit(1);
           }
           query = `@${fallbackHandle}`;
         } else {
-          console.error(`❌ Could not determine current user (${who.error ?? 'Unknown error'}). Use --user <handle>.`);
+          console.error(
+            `${p('err')}Could not determine current user (${who.error ?? 'Unknown error'}). Use --user <handle>.`,
+          );
           process.exit(1);
         }
       } else {
@@ -911,7 +960,7 @@ program
     if (result.success && result.tweets) {
       printTweets(result.tweets, { json: cmdOpts.json, emptyMessage: 'No mentions found.' });
     } else if (sweetistics.apiKey) {
-      console.error(`⚠️ GraphQL mentions failed (${result.error}); trying Sweetistics fallback...`);
+      console.error(`${p('warn')}GraphQL mentions failed (${result.error}); trying Sweetistics fallback...`);
       const fallback = await new SweetisticsClient({
         baseUrl: sweetistics.baseUrl,
         apiKey: sweetistics.apiKey,
@@ -920,11 +969,11 @@ program
       if (fallback.success && fallback.tweets) {
         printTweets(fallback.tweets, { json: cmdOpts.json, emptyMessage: 'No mentions found.' });
       } else {
-        console.error(`❌ Failed to fetch mentions: ${result.error} | Sweetistics fallback: ${fallback.error}`);
+        console.error(`${p('err')}Failed to fetch mentions: ${result.error} | Sweetistics fallback: ${fallback.error}`);
         process.exit(1);
       }
     } else {
-      console.error(`❌ Failed to fetch mentions: ${result.error}`);
+      console.error(`${p('err')}Failed to fetch mentions: ${result.error}`);
       process.exit(1);
     }
   });
@@ -945,7 +994,7 @@ program
     const resolvedEngine = useSweetistics ? 'sweetistics' : 'graphql';
     if (useSweetistics) {
       if (!sweetistics.apiKey) {
-        console.error('❌ Sweetistics engine selected but no API key provided.');
+        console.error(`${p('err')}Sweetistics engine selected but no API key provided.`);
         process.exit(1);
       }
 
@@ -959,17 +1008,17 @@ program
       if (result.success && result.user) {
         const handle = result.user.username ? `@${result.user.username}` : '(no handle)';
         const name = result.user.name || handle;
-        console.log(`🙋 Logged in via Sweetistics as ${handle} (${name})`);
-        console.log(`🪪 User ID: ${result.user.id}`);
+        console.log(`${l('user')}${handle} (${name})`);
+        console.log(`${l('userId')}${result.user.id}`);
         if (result.user.email) {
-          console.log(`📧 ${result.user.email}`);
+          console.log(`${l('email')}${result.user.email}`);
         }
-        console.log(`⚙️ Engine: ${resolvedEngine}`);
-        console.log('🔑 Credentials: Sweetistics API key');
+        console.log(`${l('engine')}${resolvedEngine}`);
+        console.log(`${l('credentials')}Sweetistics API key`);
         return;
       }
 
-      console.error(`❌ Failed to determine Sweetistics user: ${result.error ?? 'Unknown error'}`);
+      console.error(`${p('err')}Failed to determine Sweetistics user: ${result.error ?? 'Unknown error'}`);
       process.exit(1);
     }
 
@@ -983,16 +1032,16 @@ program
     });
 
     for (const warning of warnings) {
-      console.error(`⚠️ ${warning}`);
+      console.error(`${p('warn')}${warning}`);
     }
 
     if (!cookies.authToken || !cookies.ct0) {
-      console.error('❌ Missing required credentials');
+      console.error(`${p('err')}Missing required credentials`);
       process.exit(1);
     }
 
     if (cookies.source) {
-      console.error(`📍 Using credentials from: ${cookies.source}`);
+      console.error(`${l('source')}${cookies.source}`);
     }
 
     const client = new TwitterClient({ cookies, timeoutMs });
@@ -1001,10 +1050,10 @@ program
     const credentialSource = cookies.source ?? 'env/auto-detected cookies';
 
     if (result.success && result.user) {
-      console.log(`🙋 Logged in as @${result.user.username} (${result.user.name})`);
-      console.log(`🪪 User ID: ${result.user.id}`);
-      console.log(`⚙️ Engine: ${resolvedEngine}`);
-      console.log(`🔑 Credentials: ${credentialSource}`);
+      console.log(`${l('user')}@${result.user.username} (${result.user.name})`);
+      console.log(`${l('userId')}${result.user.id}`);
+      console.log(`${l('engine')}${resolvedEngine}`);
+      console.log(`${l('credentials')}${credentialSource}`);
     } else {
       // Fallback: try Sweetistics if available
       if (sweetistics.apiKey) {
@@ -1016,17 +1065,17 @@ program
         if (fallback.success && fallback.user) {
           const handle = fallback.user.username ? `@${fallback.user.username}` : '(no handle)';
           const name = fallback.user.name || handle;
-          console.log(`🙋 Logged in via Sweetistics as ${handle} (${name})`);
-          console.log(`🪪 User ID: ${fallback.user.id}`);
+          console.log(`${l('user')}${handle} (${name})`);
+          console.log(`${l('userId')}${fallback.user.id}`);
           if (fallback.user.email) {
-            console.log(`📧 ${fallback.user.email}`);
+            console.log(`${l('email')}${fallback.user.email}`);
           }
-          console.log('⚙️ Engine: sweetistics (fallback)');
-          console.log('🔑 Credentials: Sweetistics API key');
+          console.log(`${l('engine')}sweetistics (fallback)`);
+          console.log(`${l('credentials')}Sweetistics API key`);
           return;
         }
       }
-      console.error(`❌ Failed to determine current user: ${result.error ?? 'Unknown error'}`);
+      console.error(`${p('err')}Failed to determine current user: ${result.error ?? 'Unknown error'}`);
       process.exit(1);
     }
   });
@@ -1043,36 +1092,36 @@ program
       chromeProfile: opts.chromeProfile,
     });
 
-    console.log('🔍 Credential Check');
+    console.log(`${p('info')}Credential check`);
     console.log('─'.repeat(40));
 
     if (cookies.authToken) {
-      console.log(`✅ auth_token: ${cookies.authToken.slice(0, 10)}...`);
+      console.log(`${p('ok')}auth_token: ${cookies.authToken.slice(0, 10)}...`);
     } else {
-      console.log('❌ auth_token: not found');
+      console.log(`${p('err')}auth_token: not found`);
     }
 
     if (cookies.ct0) {
-      console.log(`✅ ct0: ${cookies.ct0.slice(0, 10)}...`);
+      console.log(`${p('ok')}ct0: ${cookies.ct0.slice(0, 10)}...`);
     } else {
-      console.log('❌ ct0: not found');
+      console.log(`${p('err')}ct0: not found`);
     }
 
     if (cookies.source) {
-      console.log(`📍 Source: ${cookies.source}`);
+      console.log(`${l('source')}${cookies.source}`);
     }
 
     if (warnings.length > 0) {
-      console.log('\n⚠️ Warnings:');
+      console.log(`\n${p('warn')}Warnings:`);
       for (const warning of warnings) {
         console.log(`   - ${warning}`);
       }
     }
 
     if (cookies.authToken && cookies.ct0) {
-      console.log('\n✅ Ready to tweet!');
+      console.log(`\n${p('ok')}Ready to tweet!`);
     } else {
-      console.log('\n❌ Missing credentials. Options:');
+      console.log(`\n${p('err')}Missing credentials. Options:`);
       console.log('   1. Login to x.com in Chrome');
       console.log('   2. Set AUTH_TOKEN and CT0 environment variables');
       console.log('   3. Use --auth-token and --ct0 flags');
@@ -1080,8 +1129,7 @@ program
     }
   });
 
-const rawArgs = process.argv.slice(2);
-const { argv, showHelp } = resolveCliInvocation(rawArgs, KNOWN_COMMANDS);
+const { argv, showHelp } = resolveCliInvocation(normalizedArgs, KNOWN_COMMANDS);
 
 if (showHelp) {
   program.outputHelp();
@@ -1091,5 +1139,5 @@ if (showHelp) {
 if (argv) {
   program.parse(argv);
 } else {
-  program.parse();
+  program.parse(['node', 'bird', ...normalizedArgs]);
 }
