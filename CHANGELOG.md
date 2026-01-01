@@ -1,18 +1,18 @@
 # Changelog
 
-## 0.5.1 — Unreleased
+## 0.5.1 — 2026-01-01
 
 ### Changed
-- Help banner now includes `bird` version (and git sha when available).
-- Subcommand help now lists global options (credentials, output controls, timeouts, etc.).
-- Help output now documents config files and env vars.
+- `bird --help` now includes explicit “Shortcuts” and “JSON Output” sections (documents `bird <tweet-id-or-url>` shorthand + `--json`).
+- Release docs now include explicit npm publish verification steps.
 
 ### Fixed
-- `following`/`followers` now fall back to the internal v1.1 REST endpoints when GraphQL returns 404.
+- `pnpm bird --help` now works (dev script runs the CLI entrypoint, not the library entrypoint).
+- `following`/`followers` now fall back to internal v1.1 REST endpoints when GraphQL returns `404`.
 
 ### Tests
-- Add regression test for global options in subcommand help.
-- Add opt-in live CLI test suite (real GraphQL calls; skipped by default).
+- Add root help output regression test.
+- Add opt-in live CLI test suite (real GraphQL calls; skipped by default; gated via `BIRD_LIVE=1`).
 
 ## 0.5.0 — 2026-01-01
 
