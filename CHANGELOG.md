@@ -9,6 +9,7 @@
 - `user-tweets` command to fetch a user's profile timeline (#34) — thanks @crcatala.
 - `replies` and `thread` now support pagination (`--all`, `--max-pages`, `--cursor`, `--delay`) (#35) — thanks @crcatala.
 - Long-form article tweets now render rich Draft.js content blocks/entities (#36) — thanks @crcatala.
+- `news`/`trending` command for Explore tabs with AI-curated headlines (#39) — thanks @aavetis.
 
 ### Changed
 - Library typing: `SearchResult` is now a discriminated union (so `error` only exists when `success: false`).
@@ -20,6 +21,7 @@
 - Lists GraphQL feature flags updated to prevent 400s (#27) — thanks @zheli.
 - Likes pagination now follows cursors and avoids stalling on duplicate pages (#12) — thanks @titouv.
 - `pnpm run build:dist` now succeeds after tightening JSON/pagination option typing in tweet output commands.
+- News output now respects `--tweets-per-item`, keeps unique IDs, and parses non-add entry instructions (#39) — thanks @aavetis.
 
 ### Tests
 - Following: split following/likes tests + cover cursor handling (#33) — thanks @VACInc.
