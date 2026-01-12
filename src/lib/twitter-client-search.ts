@@ -14,6 +14,27 @@ export interface TwitterClientSearchMethods {
   search(query: string, count?: number, options?: SearchFetchOptions): Promise<SearchResult>;
 }
 
+function isQueryIdMismatch(payload: string): boolean {
+  try {
+    const parsed = JSON.parse(payload) as {
+      errors?: Array<{ message?: string; path?: string[]; extensions?: { code?: string } }>;
+    };
+    return (
+      parsed.errors?.some((error) => {
+        if (error?.extensions?.code === 'GRAPHQL_VALIDATION_FAILED') {
+          return true;
+        }
+        if (error?.path?.includes('rawQuery') && /must be defined/i.test(error.message ?? '')) {
+          return true;
+        }
+        return false;
+      }) ?? false
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function withSearch<TBase extends AbstractConstructor<TwitterClientBase>>(
   Base: TBase,
 ): Mixin<TBase, TwitterClientSearchMethods> {
@@ -69,7 +90,13 @@ export function withSearch<TBase extends AbstractConstructor<TwitterClientBase>>
 
             if (!response.ok) {
               const text = await response.text();
-              return { success: false as const, error: `HTTP ${response.status}: ${text.slice(0, 200)}`, had404 };
+              const shouldRefreshQueryIds =
+                (response.status === 400 || response.status === 422) && isQueryIdMismatch(text);
+              return {
+                success: false as const,
+                error: `HTTP ${response.status}: ${text.slice(0, 200)}`,
+                had404: had404 || shouldRefreshQueryIds,
+              };
             }
 
             const data = (await response.json()) as {
@@ -112,11 +139,16 @@ export function withSearch<TBase extends AbstractConstructor<TwitterClientBase>>
                   };
                 };
               };
-              errors?: Array<{ message: string }>;
+              errors?: Array<{ message: string; extensions?: { code?: string } }>;
             };
 
             if (data.errors && data.errors.length > 0) {
-              return { success: false as const, error: data.errors.map((e) => e.message).join(', '), had404 };
+              const shouldRefreshQueryIds = data.errors.some((error) => error?.extensions?.code === 'GRAPHQL_VALIDATION_FAILED');
+              return {
+                success: false as const,
+                error: data.errors.map((e) => e.message).join(', '),
+                had404: had404 || shouldRefreshQueryIds,
+              };
             }
 
             const instructions = data.data?.search_by_raw_query?.search_timeline?.timeline?.instructions;

@@ -248,6 +248,7 @@ export function buildUserTweetsFeatures(): Record<string, boolean> {
     responsive_web_grok_analyze_button_fetch_trends_enabled: false,
     responsive_web_grok_analyze_post_followups_enabled: true,
     responsive_web_jetfuel_frame: true,
+    post_ctas_fetch_enabled: true,
     responsive_web_grok_share_attachment_enabled: true,
     responsive_web_grok_annotations_enabled: false,
     articles_preview_enabled: true,
